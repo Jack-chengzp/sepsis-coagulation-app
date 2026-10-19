@@ -1,106 +1,108 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
-from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb
+import joblib
 
-# 页面配置
+# 1. Page Configuration (must be the first Streamlit command)
 st.set_page_config(
-    page_title="免疫抑制脓毒症患者凝血功能障碍预测系统",
+    page_title="SAC Risk Predictor",
     page_icon="🩺",
-    layout="centered"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# 标题与说明
-st.title("🩺 免疫抑制脓毒症患者 7 天内凝血功能障碍风险预测系统")
-st.markdown("本系统基于 ICU 入科 24h 内的临床指标，利用机器学习（LightGBM 模型）评估患者在 7 天内发生凝血功能障碍的风险。")
+# 2. Header and Description
+st.title("Prediction of Sepsis-Associated Coagulopathy (SAC)")
+st.markdown("""
+**Development and validation of a machine learning model for predicting the 7-day risk of SAC in immunosuppressed sepsis patients.**
+This tool utilizes clinical data obtained within 24 hours of ICU admission to stratify patient risk, facilitating early clinical decision-making.
+""")
+st.markdown("---")
 
-@st.cache_resource
-def load_data_and_scaler():
-    # 读取训练数据以拟合 StandardScaler（确保和训练脚本一致）
-    train_data = pd.read_csv("traindata.csv", encoding="GBK")
-    features = ['PLT', 'APTT', 'Lac', 'SOFA', 'MCH', 'Elixhauser', 'Urine_Rate', 'RDW', 'WBC', 'PaO2']
-    X_train_raw = train_data[features]
-    y_train = train_data['Outcome']
-    
-    scaler = StandardScaler()
-    scaler.fit(X_train_raw)
-    
-    # 直接基于当前数据训练一个与脚本参数一致的 LightGBM 模型，确保独立稳定运行
-    model = lgb.LGBMClassifier(
-        random_state=123,
-        learning_rate=0.1,
-        num_leaves=50,
-        n_estimators=100,
-        subsample=0.6,
-        colsample_bytree=0.8
-    )
-    X_scaled = scaler.transform(X_train_raw)
-    model.fit(X_scaled, y_train)
-    
-    return scaler, model
+# 3. Sidebar for Patient Clinical Parameters
+st.sidebar.header("Patient Clinical Parameters")
+st.sidebar.markdown("*(24h post ICU admission)*")
 
-scaler, model = load_data_and_scaler()
-features = ['PLT', 'APTT', 'Lac', 'SOFA', 'MCH', 'Elixhauser', 'Urine_Rate', 'RDW', 'WBC', 'PaO2']
+def get_user_input():
+    # Arranging features in the exact order required by the LightGBM model
+    plt = st.sidebar.number_input("PLT (×10^9/L)", min_value=0.0, max_value=1000.0, value=150.0, step=1.0)
+    aptt = st.sidebar.number_input("APTT (s)", min_value=0.0, max_value=200.0, value=35.0, step=0.1)
+    lac = st.sidebar.number_input("Lactate (mmol/L)", min_value=0.0, max_value=30.0, value=2.0, step=0.1)
+    sofa = st.sidebar.number_input("SOFA Score", min_value=0, max_value=24, value=5, step=1)
+    mch = st.sidebar.number_input("MCH (pg)", min_value=0.0, max_value=60.0, value=29.0, step=0.1)
+    elixhauser = st.sidebar.number_input("Elixhauser Comorbidity Index", min_value=-20, max_value=50, value=0, step=1)
+    urine_rate = st.sidebar.number_input("Urine Output Rate (mL/kg/h)", min_value=0.0, max_value=20.0, value=1.0, step=0.1)
+    rdw = st.sidebar.number_input("RDW (%)", min_value=0.0, max_value=40.0, value=13.0, step=0.1)
+    wbc = st.sidebar.number_input("WBC (×10^9/L)", min_value=0.0, max_value=200.0, value=10.0, step=0.1)
+    pao2 = st.sidebar.number_input("PaO2 (mmHg)", min_value=0.0, max_value=500.0, value=80.0, step=1.0)
 
-# 侧边栏或主界面输入表单
-st.sidebar.header("患者临床指标输入 (ICU 24h内)")
-
-def user_input_features():
-    plt_val = st.sidebar.number_input('血小板计数 (PLT)', value=150.0, step=1.0)
-    aptt_val = st.sidebar.number_input('活化部分凝血活酶时间 (APTT)', value=35.0, step=0.5)
-    lac_val = st.sidebar.number_input('乳酸 (Lac)', value=1.5, step=0.1)
-    sofa_val = st.sidebar.number_input('SOFA 评分', value=5.0, step=1.0)
-    mch_val = st.sidebar.number_input('平均红细胞血红蛋白含量 (MCH)', value=30.0, step=0.5)
-    elixhauser_val = st.sidebar.number_input('Elixhauser 合并症指数', value=2.0, step=1.0)
-    urine_rate = st.sidebar.number_input('尿量率 (Urine_Rate)', value=1.0, step=0.1)
-    rdw_val = st.sidebar.number_input('红细胞分布宽度 (RDW)', value=14.0, step=0.1)
-    wbc_val = st.sidebar.number_input('白细胞计数 (WBC)', value=10.0, step=0.5)
-    pao2_val = st.sidebar.number_input('动脉血氧分压 (PaO2)', value=85.0, step=1.0)
-    
-    data = {
-        'PLT': plt_val,
-        'APTT': aptt_val,
-        'Lac': lac_val,
-        'SOFA': sofa_val,
-        'MCH': mch_val,
-        'Elixhauser': elixhauser_val,
+    user_data = {
+        'PLT': plt,
+        'APTT': aptt,
+        'Lac': lac,
+        'SOFA': sofa,
+        'MCH': mch,
+        'Elixhauser': elixhauser,
         'Urine_Rate': urine_rate,
-        'RDW': rdw_val,
-        'WBC': wbc_val,
-        'PaO2': pao2_val
+        'RDW': rdw,
+        'WBC': wbc,
+        'PaO2': pao2
     }
-    return pd.DataFrame(data, index=[0])
-
-input_df = user_input_features()
-
-# 展示输入参数
-st.subheader("📋 当前输入的患者临床参数：")
-st.dataframe(input_df)
-
-# 预测按钮
-if st.button("开始预测风险", type="primary"):
-    # 标准化输入数据
-    input_scaled = scaler.transform(input_df[features])
     
-    # 预测概率
-    pred_prob = model.predict_proba(input_scaled)[0][1]
-    
-    st.markdown("---")
-    st.subheader("📊 预测结果")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric(label="7天内发生凝血功能障碍概率", value=f"{pred_prob * 100:.2f}%")
+    features = pd.DataFrame(user_data, index=[0])
+    return features
+
+input_df = get_user_input()
+
+# 4. Main Panel: Display Inputs
+st.subheader("1. Clinical Data Summary")
+st.dataframe(input_df, hide_index=True)
+
+# 5. Load the Trained Model
+@st.cache_resource
+def load_model():
+    # Replace 'lgbm_model.pkl' with the actual path to your serialized LightGBM model
+    # e.g., model = joblib.load('lgbm_model.pkl')
+    # For demonstration, we assume the model is saved as lgbm_model.pkl
+    try:
+        model = joblib.load('lgbm_model.pkl')
+        return model
+    except FileNotFoundError:
+        return None
+
+model = load_model()
+
+# 6. Prediction Section
+st.subheader("2. Risk Prediction")
+
+if st.button("Calculate Probability", type="primary"):
+    if model is not None:
+        # Get probability of the positive class (assuming index 1 is SAC positive)
+        proba = model.predict_proba(input_df)[0][1]
         
-    with col2:
-        if pred_prob >= 0.5:
-            st.error("⚠️ 预测结果：高风险")
-            st.write("建议密切监测凝血指标，并尽早采取临床干预措施。")
-        else:
-            st.success("✅ 预测结果：低风险")
-            st.write("患者短期内发生凝血功能障碍的风险相对较低，请继续常规监护。")
-            
-    # 概率进度条展示
-    st.progress(float(pred_prob))
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric(label="Probability of SAC within 7 Days", value=f"{proba:.2%}")
+        
+        with col2:
+            if proba > 0.5: # You can adjust the threshold based on your Youden's index / ROC curve
+                st.error("⚠️ **High Risk**")
+                st.markdown("This patient is at a high risk of developing Sepsis-Associated Coagulopathy.")
+            else:
+                st.success("✅ **Low Risk**")
+                st.markdown("This patient is at a low risk of developing Sepsis-Associated Coagulopathy.")
+        
+        # Display a progress bar for visual impact
+        st.progress(float(proba))
+        
+    else:
+        st.warning("Model file not found. Please ensure 'lgbm_model.pkl' is uploaded in the root directory.")
+
+# 7. Footer / Disclaimer
+st.markdown("---")
+st.markdown("""
+### Disclaimer
+*This web-based tool is designed strictly for academic research and validation purposes. It is not intended to be a substitute for professional medical advice, diagnosis, or treatment. Clinical decisions must be made by qualified healthcare providers.*
+""")
