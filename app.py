@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 st.set_page_config(
     page_title="SIC Risk Calculator",
     page_icon="⚕️",
-    layout="wide" # 强制宽屏模式，这是实现左右分栏的基础
+    layout="wide" # 强制宽屏模式，支持左右分栏
 )
 
 # 自定义 CSS 美化
@@ -55,7 +55,6 @@ st.markdown("---")
 # ==========================================
 # 3. 左右分栏核心布局 (左侧填表，右侧出图)
 # ==========================================
-# 创建左右两列，宽度比例设为 1.2 : 1，中间留出较大空白
 left_col, right_col = st.columns([1.2, 1], gap="large")
 
 # ----------------- 左侧：输入区域 -----------------
@@ -63,7 +62,6 @@ with left_col:
     st.markdown("### Patient Clinical Profiles")
     st.markdown("*(Within 24h of ICU Admission)*")
     
-    # 在左列内部再分为两列，让输入框显得更加紧凑
     in_col1, in_col2 = st.columns(2)
     
     with in_col1:
@@ -78,9 +76,9 @@ with left_col:
         st.markdown("#### 🫀 Organ Function & Metabolic")
         sofa = st.number_input("SOFA Score", min_value=0, max_value=24, value=5)
         lac = st.number_input("Lactate (Lac) [mmol/L]", min_value=0.0, max_value=30.0, value=2.0)
-        # 使用 Unicode 字符实现下标 PₐO₂
         pao2 = st.number_input("PₐO₂ [mmHg]", min_value=0.0, max_value=500.0, value=80.0)
-        urine_rate = st.number_input("Urine Output Rate [mL/kg/h]", min_value=0.0, max_value=20.0, value=1.0)
+        # 修正了尿量单位和范围
+        urine_rate = st.number_input("Urine Output Rate [mL/h]", min_value=0.0, max_value=500.0, value=70.0)
         
     st.markdown("#### 🏥 Comorbidities")
     elixhauser = st.slider("Elixhauser Comorbidity Index", min_value=-20, max_value=50, value=0)
@@ -100,50 +98,66 @@ with right_col:
             }
             input_df = pd.DataFrame(user_data, index=[0])
             
-            with st.spinner('Calculating risk probability...'):
-                proba = model.predict_proba(input_df)[0][1]
-                proba_percentage = proba * 100
-                
-                # Plotly 仪表盘
-                fig = go.Figure(go.Indicator(
-                    mode = "gauge+number",
-                    value = proba_percentage,
-                    number = {'suffix': "%", 'font': {'size': 45, 'color': '#1E3A8A'}},
-                    domain = {'x': [0, 1], 'y': [0, 1]},
-                    title = {'text': "Probability of SIC within 7 Days", 'font': {'size': 20}},
-                    gauge = {
-                        'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
-                        'bar': {'color': "rgba(0,0,0,0)"},
-                        'bgcolor': "white",
-                        'borderwidth': 2,
-                        'bordercolor': "gray",
-                        'steps': [
-                            {'range': [0, 30], 'color': '#86EFAC'},
-                            {'range': [30, 60], 'color': '#FDE047'},
-                            {'range': [60, 100], 'color': '#FCA5A5'}
-                        ],
-                        'threshold': {
-                            'line': {'color': "black", 'width': 6},
-                            'thickness': 0.75,
-                            'value': proba_percentage
+            try:
+                with st.spinner('Standardizing features and calculating risk probability...'):
+                    # 动态读取训练集用于 Z-score 标准化
+                    train_data = pd.read_csv('traindata.csv')
+                    features_order = ['PLT', 'APTT', 'Lac', 'SOFA', 'MCH', 'Elixhauser', 'Urine_Rate', 'RDW', 'WBC', 'PaO2']
+                    
+                    train_means = train_data[features_order].mean()
+                    train_stds = train_data[features_order].std()
+                    
+                    # 严格按照训练集的均值和标准差缩放输入
+                    scaled_input_df = (input_df[features_order] - train_means) / train_stds
+                    
+                    # 模型预测
+                    proba = model.predict_proba(scaled_input_df)[0][1]
+                    proba_percentage = proba * 100
+                    
+                    # 绘制高级仪表盘
+                    fig = go.Figure(go.Indicator(
+                        mode = "gauge+number",
+                        value = proba_percentage,
+                        number = {'suffix': "%", 'font': {'size': 45, 'color': '#1E3A8A'}},
+                        domain = {'x': [0, 1], 'y': [0, 1]},
+                        title = {'text': "Probability of SIC within 7 Days", 'font': {'size': 20}},
+                        gauge = {
+                            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                            'bar': {'color': "rgba(0,0,0,0)"},
+                            'bgcolor': "white",
+                            'borderwidth': 2,
+                            'bordercolor': "gray",
+                            'steps': [
+                                {'range': [0, 30], 'color': '#86EFAC'},
+                                {'range': [30, 60], 'color': '#FDE047'},
+                                {'range': [60, 100], 'color': '#FCA5A5'}
+                            ],
+                            'threshold': {
+                                'line': {'color': "black", 'width': 6},
+                                'thickness': 0.75,
+                                'value': proba_percentage
+                            }
                         }
-                    }
-                ))
-                
-                fig.update_layout(height=350, margin=dict(l=20, r=20, t=50, b=20))
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 临床建议提示框
-                if proba_percentage >= 60:
-                    st.error("⚠️ **High Risk Profile:** The patient demonstrates a high probability of developing Sepsis-Induced Coagulopathy. Close monitoring of coagulation profiles and early interventions are highly recommended.")
-                elif proba_percentage >= 30:
-                    st.warning("⚠️ **Moderate Risk Profile:** The patient is at moderate risk. Routine clinical vigilance is advised.")
-                else:
-                    st.success("✅ **Low Risk Profile:** The patient currently shows a low probability of developing SIC.")
+                    ))
+                    
+                    fig.update_layout(height=350, margin=dict(l=20, r=20, t=50, b=20))
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 临床指导建议
+                    if proba_percentage >= 60:
+                        st.error("⚠️ **High Risk Profile:** The patient demonstrates a high probability of developing Sepsis-Induced Coagulopathy. Close monitoring of coagulation profiles and early interventions are highly recommended.")
+                    elif proba_percentage >= 30:
+                        st.warning("⚠️ **Moderate Risk Profile:** The patient is at moderate risk. Routine clinical vigilance is advised.")
+                    else:
+                        st.success("✅ **Low Risk Profile:** The patient currently shows a low probability of developing SIC.")
+                        
+            except FileNotFoundError:
+                st.error("Error: 'traindata.csv' not found. Data standardization requires the original training dataset.")
+            except Exception as e:
+                st.error(f"An unexpected error occurred during prediction: {str(e)}")
         else:
             st.error("Error: 'lgb_model.pkl' not found. Please ensure the model file is uploaded in the root directory.")
     else:
-        # 未点击预测时的占位提示
         st.info("👈 Please enter the patient's clinical parameters on the left and click **'Predict SIC Risk'** to generate the risk assessment and gauge chart.")
 
 # ==========================================
